@@ -1,0 +1,630 @@
+---
+title: "Tania El Achkar - Data Challenge"
+output: pdf_document
+---
+
+1- IMPORT THE NECESSARY LIBRARIES
+```{r}
+library("dummies")
+library("caret")
+library("dplyr")
+library("caTools")
+library("ROCR")
+```
+
+
+2- READ THE CHALLENGETRAIN.CSV FILE
+```{r}
+setwd("/Users/taniaelachkar/Desktop/Analytics for Financial Services/Individual Challenge")
+train <- read.csv("challengeTrain.csv", sep=",", stringsAsFactors=T)
+```
+
+
+3- ANALYSE THE DATA
+
+3- A- Preliminary and general overview of the data after which we analyse certain variables of interest on their own.
+```{r}
+str(train)
+head(train)
+summary(train)
+tail(train)
+nrow(train)
+```
+
+3- B- Preliminary Target Analysis: prior=0.34, which means that, in our input dataset, for every 100 customers, 34 of them won't pay their credit card fees (target=1 means that the customer won't pay their credit card fee).
+```{r}
+table(train$target)
+prior <- sum(train$target==1)/length(train$target) 
+prior
+```
+
+3- C- Correlation Matrix: we plot a correlation matrix to determine what is the correlation of each variable to the target variable. However, in order to get a correlation matrix, we first need to transform all the variables to numeric variables. We notice that the variables that are most correlated to the target variable are: sex, indBadDebt, and channel (negatively correlated), so we make sure to include these variables in the logistic model later on.
+```{r}
+train_num <- train
+str(train_num)
+
+# Convert all the integer variables to numeric variables
+for (i in colnames(train_num)) {
+  if (is.integer(train_num[,i])) {
+    train_num[,i] <- as.numeric(train_num[,i])
+  }
+}
+str(train_num)
+
+# To convert the factor variables to numeric variables, we first need to do an intermediary step and convert them to character variables
+train_num$sex <- as.character(train_num$sex)
+unique(train_num$sex)
+train_num$sex[train_num$sex=="Male"] <- 0
+train_num$sex[train_num$sex=="Female"] <- 1
+train_num$sex <- as.numeric(train_num$sex)
+
+train_num$status <- as.character(train_num$status)
+unique(train_num$status)
+train_num <- train_num[train_num$status!="Unknown",]  # we remove the observations that have an Unknown value
+unique(train_num$status)
+train_num$status[train_num$status=="Single"] <- 0
+train_num$status[train_num$status=="Married"] <- 1
+train_num$status[train_num$status=="Widower"] <- 2
+train_num$status[train_num$status=="Divorced"] <- 3
+train_num$status <- as.numeric(train_num$status)
+
+train_num$salary <- as.character(train_num$salary)
+unique(train_num$salary)
+train_num <- train_num[train_num$salary!="None",]  # we remove the observations that have a None or Unknown value
+train_num <- train_num[train_num$salary!="Unknown",]
+train_num$salary[train_num$salary=="<650"] <- 0
+train_num$salary[train_num$salary=="[650,1000)"] <- 1
+train_num$salary[train_num$salary=="[1000,1300)"] <- 2
+train_num$salary[train_num$salary=="[1300,1500)"] <- 3
+train_num$salary[train_num$salary=="[1500,2000)"] <- 4
+train_num$salary[train_num$salary=="[2000,3000)"] <- 5
+train_num$salary[train_num$salary=="[3000,5000)"] <- 6
+train_num$salary[train_num$salary=="[5000,8000)"] <- 7
+train_num$salary[train_num$salary==">8000"] <- 8
+train_num$salary <- as.numeric(train_num$salary)
+
+train_num$channel <- as.character(train_num$channel)
+unique(train_num$channel)
+train_num <- train_num[train_num$channel!="Unknown",]  # we remove the observations that have an Unknown value 
+train_num$channel[train_num$channel=="External Agent"] <- 0
+train_num$channel[train_num$channel=="Call Center"] <- 1
+train_num$channel[train_num$channel=="Recovery"] <- 2
+train_num$channel[train_num$channel=="Branch"] <- 3
+train_num$channel[train_num$channel=="App"] <- 4
+train_num$channel[train_num$channel=="Online"] <- 5
+train_num$channel <- as.numeric(train_num$channel)
+
+train_num$previous <- as.character(train_num$previous)
+unique(train_num$previous)
+train_num$previous[train_num$previous=="Normal"] <- 0
+train_num$previous[train_num$previous=="Restructuring"] <- 1
+train_num$previous[train_num$previous=="Unpaid"] <- 2
+train_num$previous[train_num$previous=="Refinancing"] <- 3
+train_num$previous[train_num$previous=="Default"] <- 4
+train_num$previous <- as.numeric(train_num$previous)
+
+str(train_num)  # now that all the variables are numeric, we can get a correlation matrix
+num <- train_num[,-1]
+
+as.table(cor(num,y=num$target))
+```
+
+3- D- Relevance Analysis with Auxiliary Function. Analysis of the results: we get a relevance plot for each of the categorical variables since a relevance analysis doesn't work for numerical variables. In the histogram, the bars that are coloured in gray (according to our code below) represent categories of a variable that are not significant, meaning that each category that is in gray is not relevant to the model because, since its p-value from the chi-squared test is greater than 0.05, meaning that this category doesn't provide any additional information that is significant for the target variable, and we can therefore ignore these categories because they don't help us predit the target variable. On the other hand, the bars are colourd in green (according to our code below) should be taken into consideration because their p-value of the chi-squared is less than 0.05, meaning that they're significant and helpful in predicting the target variable. Furthermore, the red line on these graphs represents the prior multiplied by 100. As calculated in 3-B, the prior for the whole training dataset, which is the input dataset, is equal to 0.34, so about 34% of the customers in this dataset have a target value of 1, meaning that they didn't pay their credit card fees on time. Therefore, the red line on the graph is simply used as a reference for our analysis. 
+```{r}
+relevance <- function(Target,CategoricalVariable){
+  levels=levels(CategoricalVariable)
+  colors=c()
+  for (i in 1:length(levels)){
+    TABLA=table(Target,CategoricalVariable==levels[i])
+    chi=chisq.test(TABLA)
+    if (chi$p.value<0.05){
+      colors=c(colors,"green")  
+    }else{
+      colors=c(colors,"gray")
+    }
+  }
+  TABLA=table(Target,CategoricalVariable)
+  plot=barplot(100*TABLA[2,]/(TABLA[1,]+TABLA[2,]),ylim=c(0,100),col=colors,cex.names=0.6)
+  text(x=plot, y=5+100*TABLA[2,]/(TABLA[1,]+TABLA[2,]),labels=paste(round(100*TABLA[2,]/(TABLA[1,]+TABLA[2,]),2),"%",sep=""))
+  abline(h=100*prior,col="red")
+}
+
+str(train)
+
+# We run the relevance function on categorical variables in order to get a better understanding of the data and of the impact of each category of these variables on the target variable
+relevance(train$target,train$sex)
+relevance(train$target,train$status)
+relevance(train$target,train$salary)
+relevance(train$target,train$channel)
+relevance(train$target,train$previous)
+```
+
+3- E- Age Variable: we notice that there are some values greater than 100 and we consider them to be outliers for the purpose of this analysis. In the next step, we'll impute them with the median of the age variable. Furthermore, there are 22,701 observations of the age variable that are NA values, which represents about 4% of the dataset. In the next step, we will also impute these values with the median of the age variable.
+```{r}
+plot(train$age)
+sum(is.na(train$age))
+```
+
+3- F- ExternalScore Variable: there are 8,313 observations of this variable that are NA, which represents 1.5% of the dataset, so the best approach is to impute these observations in the next step with the median of this variable.
+```{r}
+sum(is.na(train$externalScore))
+```
+
+3- G- Salary Variable: we notice that the format of this variable is not beneficial to our models, and we therefore choose to convert salary to a numeric variable and impute the value for each salary range with the mean value of each range.This is a factor variable that has 11 levels, including "None" and "Unknown". There are 3,474 observations that belong to the "None" level and 2,446 observations that belong to the "Unknown" level. We therefore decide to impute these observations in the next step with the most common value of this variable. Additionally, we impute the NA values with the median of the salary variable.
+```{r}
+class(train$salary)
+nlevels(train$salary)
+levels(train$salary)
+nrow(train[train$salary=="None",])
+nrow(train[train$salary=="Unknown",])
+```
+
+3- H- NumLoans Variable: 255,601 observations are NA, which represents 48.8% of this variable. Because these values represent a significant portion of the dataset, we impute them in the next step with the median value of this variable. Additionally, we consider the outliers to be the values that are greater than 1.5*InterQuartileRange, meaning the values that lie above the whisker of the boxplot (value>=6). We will also impute these outliers in the next step with the median of the numLoans variable.
+```{r}
+sum(is.na(train$numLoans))  
+boxplot(train$numLoans)  
+plot(train$numLoans)
+```
+
+3- I- NumMortgages Variable: 255,601 observations are NA, which represents 48.8% of this variable. This is exactly the same number of NAs as for the numLoans variable, so we need to analyse the data more in depth to see if the same observations have NA values for both variables. 
+```{r}
+sum(is.na(train$numMortgages))
+numlna <- which(is.na(train$numLoans))  # these are the indices of the observations that have an NA value for the numLoans variable
+nummna <- which(is.na(train$numMortgages))  # these are the indices of the observations that have an NA value for the numMortgages variable
+length(numlna) - length(nummna)  # 0, meaning that both vectors have the same length
+sum(numlna==nummna) == length(numlna)  # this returns TRUE, meaning that numlna and nummna contain a number of identical variables that is equal to the total number of variables that they both have. This means that our hypothesis that the same observations have NA values for both the numLoans and the numMortgages variables is true. Therefore, in the next step, we will treat the NA values of numMortgages in the same way as numLoans, by imputing them with the median of their respective variable
+```
+
+3- J- SumExternalDefault Variable: 2,679 observations have NA values, which represent 0.5% of the data. We impute these observations in the next step with the median of this variable. 
+```{r}
+sum(is.na(train$sumExternalDefault))
+```
+
+
+4- TRANSFORM AND PREPARE THE DATA 
+
+4- A- Convert the target variable to a factor instead of integer because, for the purpose of this project, we need the target variable to be a factor variable since we use a logistic model to determine the probabilities of each observation (each customer) belonging to either one of the classes (target=1 for customers who didn't pay their credit card fee and target=0 for customers who paid their credit card fee).
+```{r}
+train1 <- train  # we set a new dataset called train1 that is identical to train. Then we use train1 to do the first steps of data preparation and data transformaion
+train1$target <- factor(train1$target)
+```
+
+4- B- Convert integer variables to numeric variables for a better analysis (for greater flexibility in our analysis).
+```{r}
+for (i in colnames(train1)) {
+  if (is.integer(train1[,i])) {
+    train1[,i] <- as.numeric(train1[,i])
+  }
+}
+
+str(train1)
+```
+
+4- C- Age Variable: we impute the observations that have an age greater than 100 and the observations that have an NA value with the median of the age variable.
+```{r}
+train2 <- train1  
+
+train2$age[train2$age>=100] <- median(train2$age, na.rm=T)
+train2$age[is.na(train2$age)] <- median(train2$age, na.rm=T)
+
+summary(train2$age)
+```
+
+4- D- ExternalScore Variable: we impute the observations that have an NA value with the median of the externalScore variable.
+```{r}
+train3 <- train2
+train3$externalScore[is.na(train3$externalScore)] <- median(train3$externalScore, na.rm=T)
+```
+
+4- E- Salary Variable: for a better analysis, we convert salary from a factor variable to a numeric variable, but we first have to convert it to a character variable. Then, we impute the observations of this variable that have a value of "None" or "Unknown" with the most value that has the greatest number of occurrences in this variable. Additionally, we impute the NA values with the median of salary, once it's a numeric variable (and this median value is equal to the most common value that we mentioned earlier, which is 1150).
+```{r}
+train4 <- train3
+train4$salary <- as.character(train4$salary)
+class(train4$salary)
+unique(train4$salary)
+
+train5 <- train4
+train5$salary[train5$salary=="<650"] <- 325
+train5$salary[train5$salary==">8000"] <- 9500
+train5$salary[train5$salary=="[1000,1300)"] <- 1150
+train5$salary[train5$salary=="[1300,1500)"] <- 1400
+train5$salary[train5$salary=="[1500,2000)"] <- 1750
+train5$salary[train5$salary=="[2000,3000)"] <- 2500
+train5$salary[train5$salary=="[3000,5000)"] <- 4000
+train5$salary[train5$salary=="[5000,8000)"] <- 6500
+train5$salary[train5$salary=="[650,1000)"] <- 825
+
+train5$salary[train5$salary=="None"] <- 1150  # we impute None and Unknown values with the most common value, which is 1150
+train5$salary[train5$salary=="Unknown"] <- 1150
+
+unique(train5$salary)
+
+train5$salary <- as.numeric(train5$salary, na.rm=T) 
+
+train5$salary[is.na(train5$salary)] <- median(train5$salary, na.rm=T)
+class(train5$salary)
+
+sum(is.na(train5$salary))
+
+unique(train5$salary)
+```
+
+4- F- NumLoans Variable: we impute the NA values and the outliers, which are the values greater than or equal to 14 based on our analysis in the previous step, with the median of the numLoans variable.
+```{r}
+train6 <- train5
+train6$numLoans[is.na(train6$numLoans)] <- median(train6$numLoans, na.rm=T)
+ 
+sum(is.na(train6$numLoans))
+train6$numLoans[train6$numLoans>=14] <- median(train6$numLoans, na.rm=T)
+
+unique(train6$numLoans)
+```
+
+4- G- NumMortgages Variable: we impute the NA values with the median of this variable.
+```{r}
+train7 <- train6
+train7$numMortgages[is.na(train7$numMortgages)] <- median(train7$numMortgages, na.rm=T)
+sum(is.na(train7$numMortgages))
+unique(train7$numMortgages)
+```
+
+4- H- SumExternalDefault Variable: we impute the observations that have an NA value with the median of this variable.
+```{r}
+train8 <- train7
+train8$sumExternalDefault[is.na(train8$sumExternalDefault)] <- median(train8$sumExternalDefault, na.rm=T)
+
+sum(is.na(train8$sumExternalDefault))
+```
+
+
+5- CREATE A PREDICTIVE MODEL TO ESTIMATE THE TARGET
+
+5- A- Split the Dataset into Train, Validation, and Test sets. We use train8 as the main dataset to split into Train, Validation, and Test because train9 is the dataset that contains the transformed variables (where we did all the data preparation and data transformation). 
+```{r}
+set.seed(1234) 
+SAMPLE = sample.split(train8$target, SplitRatio = .60)
+dataTrain = subset(train8, SAMPLE == TRUE)
+dataValTest = subset(train8, SAMPLE == FALSE)
+set.seed(1234)
+SAMPLE = sample.split(dataValTest$target, SplitRatio = .50)
+dataVal= subset(dataValTest, SAMPLE == TRUE)
+dataTest = subset(dataValTest, SAMPLE == FALSE)
+
+dim(train8)
+dim(dataTrain)
+dim(dataVal)
+dim(dataTest)
+```
+
+5- B- Logistic Model: we start by creating a logistic model with all the variables and use the p-value of each variable to determine whether it's significant or not (we keep for the next model the variables that have a p-value <= 0.05).
+```{r}
+model0 <- glm(target~., data=dataTrain[,-1],family=binomial(link="logit"))
+sum0 <- summary(model0)
+sum0
+
+coef0 <- sum0$coef
+significant <- as.data.frame(coef0[coef0[,4] <= 0.05, 4])
+significant 
+sign_var <- rownames(significant)  # these are the significant variables that have a p-value <= 0.05 according to the logistic model 
+sign_var
+```
+
+5- C- Logisitic Model with Significant Variables.
+```{r}
+model1 <- glm(target~sex+age+externalScore+indSimin+indXlist+indInternet+indBadDebt+salary+numLoans+numMortgages+channel+indBadLocation+previous+sumExternalDefault, data=dataTrain[,-1],family=binomial(link="logit"))
+sum1 <- summary(model1)
+sum1
+```
+
+5- D- Logistic Models with various combinations of variables. We take into consideration the variables that are significant (as shown in the output of model0) as well as the variables that are highly correlated to the target variable (as demonstrated in section 3-C)
+```{r}
+model2 <- glm(target~status+age+externalScore+indSimin+indXlist+indCreditBureau+indInternet+indBadDebt+salary+numLoans+numMortgages+channel+indBadLocation+previous+sumExternalDefault, data=dataTrain[,-1],family=binomial(link="logit"))
+sum2 <- summary(model2)
+sum2
+
+model3 <- glm(target~status+externalScore+indSimin+indXlist+indCreditBureau+indInternet+indBadDebt+salary+numLoans+numMortgages+channel+indBadLocation+previous+sumExternalDefault, data=dataTrain[,-1],family=binomial(link="logit"))
+sum3 <- summary(model3)
+sum3
+
+model4 <- glm(target~status+externalScore+indSimin+indXlist+indInternet+indBadDebt+salary+numLoans+numMortgages+channel+indBadLocation+previous+sumExternalDefault, data=dataTrain[,-1],family=binomial(link="logit"))
+sum4 <- summary(model4)
+sum4
+
+model5 <- glm(target~status+externalScore+indSimin+indXlist+indBadDebt+salary+numLoans+numMortgages+channel+indBadLocation+previous+sumExternalDefault, data=dataTrain[,-1],family=binomial(link="logit"))
+sum5 <- summary(model5)
+sum5
+
+model6 <- glm(target~status+externalScore+indSimin+indBadDebt+salary+numLoans+numMortgages+channel+indBadLocation+previous+sumExternalDefault, data=dataTrain[,-1],family=binomial(link="logit"))
+sum6 <- summary(model6)
+sum6
+
+model7 <- glm(target~status+externalScore+indSimin+indBadDebt+salary+numLoans+channel+indBadLocation+previous+sumExternalDefault, data=dataTrain[,-1],family=binomial(link="logit"))
+sum7 <- summary(model7)
+sum7
+
+model8 <- glm(target~externalScore+indSimin+indBadDebt+salary+numLoans+channel+indBadLocation+previous+sumExternalDefault, data=dataTrain[,-1],family=binomial(link="logit"))
+sum8 <- summary(model8)
+sum8
+```
+
+5- E- Evaluation of Models with Train and Validation Sets: looking at the results, we want to select the model with the highest ROC (area under the curve => higher accuracy) in the validation set, which is equal to 0.6992796 for model0. This is the first model we created and it contains all the variables in this dataset. Since we want to maximise the AUC, we decide to select model0 to use for the final challengeTest.csv dataset. 
+```{r}
+# model0
+prediction <- predict(model0,type="response")
+Pred_auxiliar <- prediction(prediction, dataTrain$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model0_train <- as.numeric(auc.tmp@y.values)
+auc_model0_train  
+
+prediction <- predict(model0, newdata=dataVal,type="response")
+Pred_auxiliar <- prediction(prediction, dataVal$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model0_val <- as.numeric(auc.tmp@y.values)
+auc_model0_val  
+
+dataTest$prediction <- predict(model0, newdata=dataTest,type="response")
+Pred_auxiliar <- prediction(dataTest$prediction, dataTest$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model0_test <- as.numeric(auc.tmp@y.values)
+auc_model0_test
+
+# model1
+prediction <- predict(model1,type="response")
+Pred_auxiliar <- prediction(prediction, dataTrain$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model1_train <- as.numeric(auc.tmp@y.values)
+auc_model1_train 
+
+prediction <- predict(model1, newdata=dataVal,type="response")
+Pred_auxiliar <- prediction(prediction, dataVal$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model1_val <- as.numeric(auc.tmp@y.values)
+auc_model1_val 
+
+dataTest$prediction <- predict(model1, newdata=dataTest,type="response")
+Pred_auxiliar <- prediction(dataTest$prediction, dataTest$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model1_test <- as.numeric(auc.tmp@y.values)
+auc_model1_test
+
+# model2
+prediction <- predict(model2,type="response")
+Pred_auxiliar <- prediction(prediction, dataTrain$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model2_train <- as.numeric(auc.tmp@y.values)
+auc_model2_train  
+
+prediction <- predict(model2, newdata=dataVal,type="response")
+Pred_auxiliar <- prediction(prediction, dataVal$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model2_val <- as.numeric(auc.tmp@y.values)
+auc_model2_val
+
+dataTest$prediction <- predict(model2, newdata=dataTest,type="response")
+Pred_auxiliar <- prediction(dataTest$prediction, dataTest$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model2_test <- as.numeric(auc.tmp@y.values)
+auc_model2_test
+
+# model3
+prediction <- predict(model3,type="response")
+Pred_auxiliar <- prediction(prediction, dataTrain$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model3_train <- as.numeric(auc.tmp@y.values)
+auc_model3_train  
+
+prediction <- predict(model3, newdata=dataVal,type="response")
+Pred_auxiliar <- prediction(prediction, dataVal$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model3_val <- as.numeric(auc.tmp@y.values)
+auc_model3_val
+
+dataTest$prediction <- predict(model3, newdata=dataTest,type="response")
+Pred_auxiliar <- prediction(dataTest$prediction, dataTest$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model3_test <- as.numeric(auc.tmp@y.values)
+auc_model3_test
+
+# model4
+prediction <- predict(model4,type="response")
+Pred_auxiliar <- prediction(prediction, dataTrain$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model4_train <- as.numeric(auc.tmp@y.values)
+auc_model4_train  
+
+prediction <- predict(model4, newdata=dataVal,type="response")
+Pred_auxiliar <- prediction(prediction, dataVal$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model4_val <- as.numeric(auc.tmp@y.values)
+auc_model4_val
+
+dataTest$prediction <- predict(model4, newdata=dataTest,type="response")
+Pred_auxiliar <- prediction(dataTest$prediction, dataTest$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model4_test <- as.numeric(auc.tmp@y.values)
+auc_model4_test
+
+# model5
+prediction <- predict(model5,type="response")
+Pred_auxiliar <- prediction(prediction, dataTrain$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model5_train <- as.numeric(auc.tmp@y.values)
+auc_model5_train  
+
+prediction <- predict(model5, newdata=dataVal,type="response")
+Pred_auxiliar <- prediction(prediction, dataVal$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model5_val <- as.numeric(auc.tmp@y.values)
+auc_model5_val
+
+dataTest$prediction <- predict(model5, newdata=dataTest,type="response")
+Pred_auxiliar <- prediction(dataTest$prediction, dataTest$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model5_test <- as.numeric(auc.tmp@y.values)
+auc_model5_test
+
+# model6
+prediction <- predict(model6,type="response")
+Pred_auxiliar <- prediction(prediction, dataTrain$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model6_train <- as.numeric(auc.tmp@y.values)
+auc_model6_train  
+
+prediction <- predict(model6, newdata=dataVal,type="response")
+Pred_auxiliar <- prediction(prediction, dataVal$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model6_val <- as.numeric(auc.tmp@y.values)
+auc_model6_val
+
+dataTest$prediction <- predict(model6, newdata=dataTest,type="response")
+Pred_auxiliar <- prediction(dataTest$prediction, dataTest$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model6_test <- as.numeric(auc.tmp@y.values)
+auc_model6_test
+
+# model7
+prediction <- predict(model7,type="response")
+Pred_auxiliar <- prediction(prediction, dataTrain$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model7_train <- as.numeric(auc.tmp@y.values)
+auc_model7_train  
+
+prediction <- predict(model7, newdata=dataVal,type="response")
+Pred_auxiliar <- prediction(prediction, dataVal$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model7_val <- as.numeric(auc.tmp@y.values)
+auc_model7_val
+
+dataTest$prediction <- predict(model7, newdata=dataTest,type="response")
+Pred_auxiliar <- prediction(dataTest$prediction, dataTest$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model7_test <- as.numeric(auc.tmp@y.values)
+auc_model7_test
+
+# model8
+prediction <- predict(model8,type="response")
+Pred_auxiliar <- prediction(prediction, dataTrain$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model8_train <- as.numeric(auc.tmp@y.values)
+auc_model8_train  
+
+prediction <- predict(model8, newdata=dataVal,type="response")
+Pred_auxiliar <- prediction(prediction, dataVal$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model8_val <- as.numeric(auc.tmp@y.values)
+auc_model8_val
+
+dataTest$prediction <- predict(model8, newdata=dataTest,type="response")
+Pred_auxiliar <- prediction(dataTest$prediction, dataTest$target, label.ordering = NULL)
+auc.tmp <- performance(Pred_auxiliar, "auc");
+auc_model8_test <- as.numeric(auc.tmp@y.values)
+auc_model8_test
+
+
+model_0 <- c(auc_model0_train,auc_model0_val,auc_model0_test)
+model_1 <- c(auc_model1_train,auc_model1_val,auc_model1_test)
+model_2 <- c(auc_model2_train,auc_model2_val,auc_model2_test)
+model_3 <- c(auc_model3_train,auc_model3_val,auc_model3_test)
+model_4 <- c(auc_model4_train,auc_model4_val,auc_model4_test)
+model_5 <- c(auc_model5_train,auc_model5_val,auc_model5_test)
+model_6 <- c(auc_model6_train,auc_model6_val,auc_model6_test)
+model_7 <- c(auc_model7_train,auc_model7_val,auc_model7_test)
+model_8 <- c(auc_model8_train,auc_model8_val,auc_model8_test)
+
+
+Evaluation <- data.frame(model_0,model_1,model_2,model_3,model_4,model_5,model_6,model_7,model_8)
+rownames(Evaluation) <- c("auc_train","auc_val","auc_test")
+colnames(Evaluation) <- c("model0","model1","model2","model3","model4","model5","model6","model7","model8")
+Evaluation
+```
+
+
+6- READ CHALLENGETEST.CSV
+```{r}
+test <- read.csv("challengeTest.csv", sep=",", stringsAsFactors=T)
+head(test)
+```
+
+6- A- Data Cleaning and Preparation for Test: we do the same data preparation for the test set as we did for the train set.
+```{r}
+test1 <- test  # we create a new dataset called test1 that is identical to the test dataset, and we use test1 to do the data preparation. 
+
+for (i in colnames(test1)) {
+  if (is.integer(test1[,i])) {
+    test1[,i] <- as.numeric(test1[,i])
+  }
+}
+
+str(test1)
+
+test2 <- test1
+test2$age[test2$age>=100] <- median(test2$age, na.rm=T)
+test2$age[is.na(test2$age)] <- median(test2$age, na.rm=T)
+summary(test2$age)
+
+test3 <- test2
+test3$externalScore[is.na(test3$externalScore)] <- median(test3$externalScore, na.rm=T)
+
+test4 <- test3
+test4$salary <- as.character(test4$salary)
+class(test4$salary)
+unique(test4$salary)
+
+test5 <- test4
+test5$salary[test5$salary=="<650"] <- 325
+test5$salary[test5$salary==">8000"] <- 9500
+test5$salary[test5$salary=="[1000,1300)"] <- 1150
+test5$salary[test5$salary=="[1300,1500)"] <- 1400
+test5$salary[test5$salary=="[1500,2000)"] <- 1750
+test5$salary[test5$salary=="[2000,3000)"] <- 2500
+test5$salary[test5$salary=="[3000,5000)"] <- 4000
+test5$salary[test5$salary=="[5000,8000)"] <- 6500
+test5$salary[test5$salary=="[650,1000)"] <- 825
+
+test5$salary[test5$salary=="None"] <- 1150  # we impute None and Unknown values with the most common value, which is 1150
+test5$salary[test5$salary=="Unknown"] <- 1150
+
+unique(test5$salary)
+test5$salary <- as.numeric(test5$salary, na.rm=T) 
+test5$salary[is.na(test5$salary)] <- median(test5$salary, na.rm=T)
+class(test5$salary)
+sum(is.na(test5$salary))
+unique(test5$salary)
+
+test6 <- test5
+test6$numLoans[is.na(test6$numLoans)] <- median(test6$numLoans, na.rm=T)
+sum(is.na(test6$numLoans))
+test6$numLoans[test6$numLoans>=14] <- median(test6$numLoans, na.rm=T)
+unique(test6$numLoans)
+
+test7 <- test6
+test7$numMortgages[is.na(test7$numMortgages)] <- median(test7$numMortgages, na.rm=T)
+sum(is.na(test7$numMortgages))
+unique(test7$numMortgages)
+
+test8 <- test7
+test8$sumExternalDefault[is.na(test8$sumExternalDefault)] <- median(test8$sumExternalDefault, na.rm=T)
+sum(is.na(test8$sumExternalDefault))
+```
+
+
+7- USE THE MODEL IN CHALLENGE TEST TO ESTIMATE PROBABILITY (VARIABLE PREDICTION)
+```{r}
+# We decided to use model0 (explanation in 5-E)
+prediction <- predict.glm(model0, test8, type="response", na.rm=T)
+# prediction contains the prediction real values between 0 and 1 for the challengeTest.csv file
+
+head(prediction)
+length(prediction)
+nrow(test)
+```
+
+
+8- WRITE CHALLENGETEST WITH THE NEW VARIABLE
+```{r}
+prediction
+
+output <- cbind(test8,prediction)
+
+write.csv(output,file="challengeTest_TaniaElAchkar.csv",row.names=FALSE)
+```
